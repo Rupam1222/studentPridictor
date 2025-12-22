@@ -1,9 +1,10 @@
 pandas 
-numpy
-seaborn
-matplotlib
-sciket-learn
+numpy 
+seaborn 
+matplotlib 
+scikit-learn
 catboost
 xgboost
 
-streamlist
+
+streamlit 

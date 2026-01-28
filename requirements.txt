@@ -1,0 +1,11 @@
+numpy
+xgboost
+catboost
+matplotlib
+seaborn
+scikit-learn
+streamlit
+pandas
+sqlalchemy
+mysql-connector-python
+plotly

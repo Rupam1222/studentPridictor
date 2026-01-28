@@ -8,16 +8,27 @@ import sqlite3
 # =====================================================
 st.set_page_config(page_title="Student Performance App", layout="wide")
 
+DB_NAME = "student_predictions.db"
+
 # =====================================================
-# DATABASE (SQLite)
+# DATABASE HELPERS
 # =====================================================
 def get_connection():
-    return sqlite3.connect("student_predictions.db", check_same_thread=False)
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
 
-def create_tables():
+def get_columns(table):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = [row[1] for row in cur.fetchall()]
+    conn.close()
+    return cols
+
+def create_and_migrate_tables():
     conn = get_connection()
     cur = conn.cursor()
 
+    # ---- USERS TABLE ----
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
@@ -25,6 +36,7 @@ def create_tables():
         )
     """)
 
+    # ---- BASE PREDICTIONS TABLE (MINIMAL) ----
     cur.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,18 +47,29 @@ def create_tables():
             lunch TEXT,
             test_prep TEXT,
             reading_input INTEGER,
-            writing_input INTEGER,
-            predicted_math REAL,
-            predicted_reading REAL,
-            predicted_writing REAL,
-            overall_average REAL
+            writing_input INTEGER
         )
     """)
+
+    # ---- AUTO MIGRATION (ADD MISSING COLUMNS) ----
+    existing_cols = get_columns("predictions")
+
+    new_columns = {
+        "math": "REAL",
+        "science": "REAL",
+        "computer": "REAL",
+        "english": "REAL",
+        "overall_average": "REAL"
+    }
+
+    for col, dtype in new_columns.items():
+        if col not in existing_cols:
+            cur.execute(f"ALTER TABLE predictions ADD COLUMN {col} {dtype}")
 
     conn.commit()
     conn.close()
 
-create_tables()
+create_and_migrate_tables()
 
 # =====================================================
 # SESSION STATE
@@ -61,14 +84,14 @@ if "auth_page" not in st.session_state:
     st.session_state.auth_page = "login"
 
 # =====================================================
-# LOGIN
+# AUTH PAGES
 # =====================================================
 def login_page():
     st.title("🔐 Login")
 
     with st.form("login"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
         btn = st.form_submit_button("Login")
 
     if btn:
@@ -76,62 +99,50 @@ def login_page():
         cur = conn.cursor()
         cur.execute(
             "SELECT * FROM users WHERE username=? AND password=?",
-            (username, password)
+            (u, p)
         )
-        user = cur.fetchone()
-        conn.close()
-
-        if user:
+        if cur.fetchone():
             st.session_state.authenticated = True
-            st.session_state.username = username
+            st.session_state.username = u
             st.rerun()
         else:
             st.error("Invalid credentials")
+        conn.close()
 
     if st.button("Create new account"):
         st.session_state.auth_page = "register"
         st.rerun()
 
-# =====================================================
-# REGISTER
-# =====================================================
 def register_page():
     st.title("📝 Register")
 
     with st.form("register"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        confirm = st.text_input("Confirm Password", type="password")
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        c = st.text_input("Confirm Password", type="password")
         btn = st.form_submit_button("Register")
 
     if btn:
-        if password != confirm:
+        if p != c:
             st.error("Passwords do not match")
             return
 
         conn = get_connection()
         cur = conn.cursor()
         try:
-            cur.execute(
-                "INSERT INTO users VALUES (?, ?)",
-                (username, password)
-            )
+            cur.execute("INSERT INTO users VALUES (?,?)", (u, p))
             conn.commit()
             st.success("Account created. Please login.")
             st.session_state.auth_page = "login"
             st.rerun()
         except:
             st.error("Username already exists")
-        finally:
-            conn.close()
+        conn.close()
 
     if st.button("Back to Login"):
         st.session_state.auth_page = "login"
         st.rerun()
 
-# =====================================================
-# LOGOUT
-# =====================================================
 def logout():
     st.session_state.authenticated = False
     st.session_state.username = ""
@@ -172,11 +183,10 @@ page = st.sidebar.radio("Navigate", ["Predictor", "Dashboard", "Database"])
 st.sidebar.button("Logout", on_click=logout)
 
 # =====================================================
-# PREDICTOR
+# PREDICTOR PAGE
 # =====================================================
 if page == "Predictor":
-
-    st.title("🎯 Student Score Predictor")
+    st.title("🎯 Multi-Subject Score Predictor")
 
     with st.form("predict"):
         gender = st.selectbox("Gender", ["female", "male"])
@@ -185,8 +195,8 @@ if page == "Predictor":
             "bachelor's degree","some college","master's degree",
             "associate's degree","high school","some high school"
         ])
-        lunch = st.selectbox("Lunch Type", ["standard","free/reduced"])
-        prep = st.selectbox("Test Preparation", ["none","completed"])
+        lunch = st.selectbox("Lunch", ["standard","free/reduced"])
+        prep = st.selectbox("Test Prep", ["none","completed"])
         read = st.number_input("Reading Score", 0, 100, 70)
         write = st.number_input("Writing Score", 0, 100, 70)
         btn = st.form_submit_button("Predict")
@@ -206,17 +216,18 @@ if page == "Predictor":
         df["average"] = (read + write) / 2
         df["Unnamed: 0"] = 0
 
-        scaled = preprocessor.transform(df)
-        math = max(0, min(100, model.predict(scaled)[0]))
-        reading = min(100, read + 2)
-        writing = min(100, write + 2)
-        overall = round((math + reading + writing) / 3, 2)
+        math = round(max(0, min(100, model.predict(preprocessor.transform(df))[0])), 2)
+        science = round(min(100, (math + read) / 2 + 2), 2)
+        computer = round(min(100, (math + write) / 2 + 2), 2)
+        english = round(min(100, (read + write) / 2 + 1), 2)
+        overall = round((math + science + computer + english) / 4, 2)
 
-        st.success("Predicted Scores")
-        st.metric("Math", f"{math:.2f}")
-        st.metric("Reading", f"{reading:.2f}")
-        st.metric("Writing", f"{writing:.2f}")
-        st.info(f"Overall Average: {overall}")
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Math", math)
+        c2.metric("Science", science)
+        c3.metric("Computer", computer)
+        c4.metric("English", english)
+        st.info(f"⭐ Overall Average: {overall}")
 
         conn = get_connection()
         cur = conn.cursor()
@@ -224,13 +235,13 @@ if page == "Predictor":
             INSERT INTO predictions (
                 username, gender, race_ethnicity, parental_education,
                 lunch, test_prep, reading_input, writing_input,
-                predicted_math, predicted_reading, predicted_writing, overall_average
+                math, science, computer, english, overall_average
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             st.session_state.username, gender, race, parent,
             lunch, prep, read, write,
-            math, reading, writing, overall
+            math, science, computer, english, overall
         ))
         conn.commit()
         conn.close()
@@ -239,7 +250,6 @@ if page == "Predictor":
 # DASHBOARD
 # =====================================================
 elif page == "Dashboard":
-
     st.title("📊 Dashboard")
 
     conn = get_connection()
@@ -251,18 +261,17 @@ elif page == "Dashboard":
     conn.close()
 
     if df.empty:
-        st.info("No predictions yet")
+        st.info("No data yet")
         st.stop()
 
     st.metric("Total Predictions", len(df))
-    st.line_chart(df["predicted_math"])
-    st.bar_chart(df[["predicted_math","predicted_reading","predicted_writing"]])
+    st.line_chart(df[["math","science","computer","english"]])
+    st.bar_chart(df[["math","science","computer","english"]].mean())
 
 # =====================================================
 # DATABASE
 # =====================================================
 elif page == "Database":
-
     st.title("🗄️ Prediction Records")
 
     conn = get_connection()
